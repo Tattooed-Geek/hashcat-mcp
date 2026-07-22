@@ -6,7 +6,9 @@ YouTube: https://www.youtube.com/@techchipnet
 Website: https://www.techchip.net
 
 A Model Context Protocol (MCP) server that wraps the hashcat suite.
-Communicates via JSON-RPC 2.0 over stdio.
+Communicates via JSON-RPC 2.0 over stdio (default) or HTTP (--http flag).
+
+HTTP mode added by Tattooed-Geek fork for remote MCP client access.
 """
 
 import json
@@ -18,6 +20,9 @@ import logging
 import tempfile
 import time
 import signal
+import argparse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -777,6 +782,68 @@ TOOL_HANDLERS = {
     "generate_mask": handle_generate_mask,
 }
 
+# --- HTTP Server (StreamableHTTP mode) ---
+
+class MCPHTTPHandler(BaseHTTPRequestHandler):
+    """HTTP handler for MCP StreamableHTTP transport."""
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8')
+
+        try:
+            req = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_error(-32700, "Parse error")
+            return
+
+        if not isinstance(req, dict) or "method" not in req:
+            self._send_error(-32600, "Invalid Request")
+            return
+
+        res = handle_request(req)
+        if res is not None:
+            self._send_json(res)
+        else:
+            self.send_response(202)
+            self.end_headers()
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "ok", "server": SERVER_NAME, "version": SERVER_VERSION}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _send_json(self, data: dict, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def _send_error(self, code: int, message: str):
+        self._send_json({"jsonrpc": "2.0", "id": None, "error": {"code": code, "message": message}})
+
+    def log_message(self, format, *args):
+        log.info("HTTP %s", format % args)
+
+
+def run_http_server(host: str = "0.0.0.0", port: int = 9090):
+    """Run the MCP server in HTTP mode."""
+    server = HTTPServer((host, port), MCPHTTPHandler)
+    log.info("Hashcat MCP HTTP server listening on http://%s:%d", host, port)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        log.info("Shutting down HTTP server")
+        server.shutdown()
+
+
 # --- JSON-RPC 2.0 Loop ---
 def make_response(req_id, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
@@ -818,7 +885,17 @@ def handle_request(req: dict) -> dict:
     return make_error(req_id, -32601, f"Unknown method: '{method}'")
 
 def main():
-    log.info("Hashcat MCP server started")
+    parser = argparse.ArgumentParser(description="Hashcat MCP Server")
+    parser.add_argument("--http", action="store_true", help="Run in HTTP mode instead of stdio")
+    parser.add_argument("--host", default="0.0.0.0", help="HTTP bind address (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=9090, help="HTTP port (default: 9090)")
+    args = parser.parse_args()
+
+    if args.http:
+        run_http_server(host=args.host, port=args.port)
+        return
+
+    log.info("Hashcat MCP server started (stdio mode)")
     for line in sys.stdin:
         line = line.strip()
         if not line: continue
@@ -828,12 +905,12 @@ def main():
             sys.stdout.write(json.dumps(make_error(None, -32700, "Parse error")) + "\n")
             sys.stdout.flush()
             continue
-            
+
         if not isinstance(req, dict) or "method" not in req:
             sys.stdout.write(json.dumps(make_error(req.get("id"), -32600, "Invalid Request")) + "\n")
             sys.stdout.flush()
             continue
-            
+
         res = handle_request(req)
         if res is not None:
             sys.stdout.write(json.dumps(res) + "\n")
