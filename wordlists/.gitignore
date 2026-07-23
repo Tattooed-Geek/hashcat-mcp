@@ -1,0 +1,5 @@
+# Wordlists are downloaded by download-wordlists.sh
+# They are too large to store in git (~140MB for rockyou alone)
+# Run: ./download-wordlists.sh
+*
+!.gitkeep
