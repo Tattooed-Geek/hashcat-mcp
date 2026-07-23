@@ -21,7 +21,7 @@ import tempfile
 import time
 import signal
 import argparse
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 logging.basicConfig(
@@ -835,7 +835,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
 def run_http_server(host: str = "0.0.0.0", port: int = 9090):
     """Run the MCP server in HTTP mode."""
-    server = HTTPServer((host, port), MCPHTTPHandler)
+    server = ThreadingHTTPServer((host, port), MCPHTTPHandler)
     log.info("Hashcat MCP HTTP server listening on http://%s:%d", host, port)
     try:
         server.serve_forever()
