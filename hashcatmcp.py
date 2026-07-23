@@ -19,7 +19,6 @@ import os
 import logging
 import tempfile
 import time
-import signal
 import argparse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -391,7 +390,7 @@ def run_cmd(cmd: list[str], timeout: int | None = None, session_name: str | None
     if session_name and "--restore-file-path" not in cmd:
         cmd.extend(["--restore-file-path", os.path.join(session_dir, f"{session_name}.restore")])
 
-    log.info("Running: %s (timeout=%s)", " ".join(cmd), timeout)
+    log.info("Running: %s", " ".join(cmd))
 
     try:
         proc = subprocess.Popen(
@@ -399,41 +398,19 @@ def run_cmd(cmd: list[str], timeout: int | None = None, session_name: str | None
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=session_dir # Force hashcat to save sessions/logs here
+            cwd=session_dir
         )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-            return {
-                "success": proc.returncode == 0,
-                "stdout": mask_paths(stdout),
-                "stderr": mask_paths(stderr),
-                "returncode": proc.returncode,
-            }
-        except subprocess.TimeoutExpired:
-            # Gracefully terminate so Hashcat saves its .restore checkpoint
-            if sys.platform != "win32":
-                proc.send_signal(signal.SIGINT) # Better chance of saving checkpoint
-            else:
-                proc.terminate()
-                
-            try:
-                stdout, stderr = proc.communicate(timeout=3) # Give it 3s to save
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                stdout, stderr = proc.communicate()
-                
-            msg = f"(Command timed out after {timeout}s"
-            if session_name:
-                msg += f". You can resume using restore_session with session_name: '{session_name}')\n"
-            else:
-                msg += ")\n"
-                
-            return {
-                "success": True, # Timeout handled safely
-                "stdout": mask_paths(msg + (stdout or "")),
-                "stderr": mask_paths(stderr or ""),
-                "returncode": 0,
-            }
+        # No timeout — let hashcat run to completion.
+        # The MCP client's HTTP timeout (configured in Hermes config.yaml)
+        # is the only timeout that matters. If the client disconnects,
+        # hashcat keeps running and can be resumed via restore_session.
+        stdout, stderr = proc.communicate()
+        return {
+            "success": proc.returncode == 0,
+            "stdout": mask_paths(stdout),
+            "stderr": mask_paths(stderr),
+            "returncode": proc.returncode,
+        }
     except FileNotFoundError:
         return {"success": False, "stdout": "", "stderr": f"Command not found: {cmd[0]}", "returncode": -1}
     except Exception as e:
